@@ -1,0 +1,1026 @@
+---
+classoption: landscape
+geometry: "left=0.5cm,right=0.5cm,top=1cm,bottom=2cm"
+output: 
+  pdf_document:
+    keep_tex: true
+    number_sections: false
+papersize: a4
+---
+
+```{r load packages, include=FALSE}
+library("tidyverse")
+library("readxl")
+library("ggplot2")
+library("dplyr")
+library("mc2d")
+library("tmap")
+library("tmaptools")
+library("sf")
+library("leaflet")
+library("RColorBrewer")
+library("treemap")
+library("gridExtra")
+library("cowplot")
+library("grid")
+library("treemapify")
+library("patchwork")
+
+rm(list=ls())
+gc()
+```
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+```{r import data, include=FALSE}
+setwd("C:/Users/Wiame/Desktop/Effectif")
+Effectif_v2 <- read_excel("Effectif.xlsx")
+Location_et <- read_excel("COMMUNES.xlsx")
+etablissement <-
+  read_excel("dbo_DataIdentifEtablissementsPublic.xlsx", sheet = "dbo_DataIdentifEtablissementsPu")
+Evolution <- read_excel("data_Reg_National_Final.xlsx")
+
+```
+
+```{r region shapefile, include=FALSE}
+region_shape <- read_sf("Shapefile_regional/Regions.shp")
+
+region_shape$regName[region_shape$regName == "Guelmim-Oued Noun"] <- "Régions de Sud"
+region_shape$regName[region_shape$regName == "Laayoune-Sakia El Hamra"] <- "Régions de Sud"
+region_shape$regName[region_shape$regName == "Eddakhla-Oued Eddahab"] <- "Régions de Sud"
+
+region_shape <- region_shape %>%
+  sf::st_make_valid()
+
+region_shape <- region_shape %>%
+  group_by(regName) %>%
+  summarise(geometry = sf::st_union(geometry), 
+            regCode = if_else(regName == "Régions de Sud", 10, regCode),
+            lng = if_else(regName == "Régions de Sud", mean(sf::st_coordinates(geometry)[, "X"]), lng),
+            lat = if_else(regName == "Régions de Sud", mean(sf::st_coordinates(geometry)[, "Y"]), lat)) %>%
+  ungroup()
+
+
+```
+
+```{r province shapefiles, include=FALSE}
+provinces_shape <- read_sf("Shapefile_provincial/Provinces.shp")
+
+provinces_shape$regName[provinces_shape$regName == "Guelmim-Oued Noun"] <- "Régions de Sud"
+provinces_shape$regName[provinces_shape$regName == "Laayoune-Sakia El Hamra"] <- "Régions de Sud"
+provinces_shape$regName[provinces_shape$regName == "Eddakhla-Oued Eddahab"] <- "Régions de Sud"
+
+provinces_shape <- provinces_shape %>%
+  sf::st_make_valid()
+
+provinces_shape <- provinces_shape %>%
+  group_by(provCode) %>%
+  reframe(geometry = sf::st_union(geometry),
+          regCode = if_else(regName == "Régions de Sud", 10, first(regCode)),
+          lng = if_else(regName == "Régions de Sud", mean(sf::st_coordinates(geometry)[, "X"]), first(lng)),
+          lat = if_else(regName == "Régions de Sud", mean(sf::st_coordinates(geometry)[, "Y"]), first(lat)),
+          provName = first(provName),
+          provCode = first(provCode)) %>%
+  ungroup()
+
+
+provinces_shape <- st_as_sf(provinces_shape)  # Convert to sf class
+
+```
+
+```{r commune shapefile, include=FALSE}
+com_shape <- read_sf("Shapefile_communal/Communes.shp")
+
+com_shape$LL_REG[com_shape$LL_REG == "Guelmim-Oued Noun"] <- "Régions de Sud"
+com_shape$LL_REG[com_shape$LL_REG == "Laayoune-Sakia El Hamra"] <- "Régions de Sud"
+com_shape$LL_REG[com_shape$LL_REG == "Eddakhla-Oued Eddahab"] <- "Régions de Sud"
+
+com_shape <- com_shape %>%
+  sf::st_make_valid()
+
+com_shape <- com_shape %>%
+  mutate(
+          regCode = if_else(LL_REG == "Régions de Sud", 10, regCode),
+) %>%
+  ungroup()
+
+com_shape <- st_as_sf(com_shape)
+
+library(rmapshaper)
+com_shape <- ms_simplify(com_shape)
+
+
+com_shape$CD_COM_CTR <- as.numeric(com_shape$CD_COM_CTR)
+# Find the rows with duplicated CD_COM_CTR values
+duplicated_rows <- com_shape[duplicated(com_shape$CD_COM_CTR), ]
+
+# Keep only the first occurrence of each duplicated CD_COM_CTR value
+unique_com_shape <- com_shape[!duplicated(com_shape$CD_COM_CTR), ]
+
+# Combine the unique rows with the first occurrence of duplicated rows
+com_shape<- rbind(unique_com_shape, duplicated_rows[!duplicated(duplicated_rows$CD_COM_CTR), ])
+
+com_shape <- com_shape %>% arrange(LL_PROV)
+```
+
+```{r Calcul des variables, include=FALSE}
+#Calcul effectif total par genre
+Effectif_masc_total <-
+  Effectif_v2$nouveaux_masc + Effectif_v2$redoublons_masc
+Effectif_fem_total <-
+  Effectif_v2$nouveaux_femi + Effectif_v2$redoublons_femi
+Effectif_v2 <-
+  mutate(Effectif_v2, Effectif_masc_total, Effectif_fem_total)
+
+#Calcul nouveaux total
+Nouveaux_total <-
+  Effectif_v2$nouveaux_masc + Effectif_v2$nouveaux_femi
+Effectif_v2 <- mutate(Effectif_v2, Nouveaux_total)
+
+#Calculate total redoublons
+Redoublons_total <-
+  Effectif_v2$redoublons_femi  + Effectif_v2$redoublons_masc
+Effectif_v2 <- mutate(Effectif_v2, Redoublons_total)
+
+#Ajouter le niveau
+Effectif_v2 <- Effectif_v2 %>%
+  mutate(niveau = ifelse(
+    grepl("^106", nefstat10),
+    "Primaire",
+    ifelse(
+      grepl("^3A3", nefstat10),
+      "Secondaire collégial",
+      "Secondaire qualifiant"
+    )
+  ))
+```
+
+```{r Jointure, include=FALSE}
+et_eff <-
+  inner_join(Effectif_v2, etablissement, by = c("cd_etab" = "CD_ETAB"))
+head(et_eff)
+et_eff[23:112] <- list(NULL)
+et_eff[16:19] <- list(NULL)
+et_eff[9] <- NULL
+et_eff[18:29] <- list(NULL)
+et_eff[15:16] <- list(NULL)
+
+
+et_eff$CD_COM <-
+  as.numeric(et_eff$CD_COM)
+
+Evolution <- Evolution %>% filter(Région!="National")
+
+
+
+Location_et$LL_REG[Location_et$LL_REG == "Guelmim-Oued Noun"] <- "Régions de Sud"
+Location_et$LL_REG[Location_et$LL_REG == "Laayoune-Sakia El Hamra"] <- "Régions de Sud"
+Location_et$LL_REG[Location_et$LL_REG == "Eddakhla-Oued Eddahab"] <- "Régions de Sud"
+
+Location_et <- Location_et %>% mutate(CD_REG = if_else(LL_REG == "Régions de Sud", 10, CD_REG))
+
+
+
+```
+
+```{r table join,include=FALSE}
+Table_join <- inner_join(et_eff, Location_et, by = "CD_COM")
+Table_join <- Table_join %>%
+  arrange(CD_REG) %>%
+  filter(LL_REG != "Services Centraux") %>%
+  mutate(
+    Cycle = case_when(
+      grepl("^1061", nefstat10) ~ "1AP",
+      grepl("^1062", nefstat10) ~ "2AP",
+      grepl("^1063", nefstat10) ~ "3AP",
+      grepl("^1064", nefstat10) ~ "4AP",
+      grepl("^1065", nefstat10) ~ "5AP",
+      grepl("^1066", nefstat10) ~ "6AP",
+      grepl("^2A31", nefstat10) ~ "1AC",
+      grepl("^2A32", nefstat10) ~ "2AC",
+      grepl("^2A33", nefstat10) ~ "3AC",
+      grepl("^3A31", nefstat10) ~ "TC",
+      grepl("^3A32", nefstat10) ~ "1BAC",
+      grepl("^3A33", nefstat10) ~ "2BAC",
+      TRUE ~ as.character(NA)  # Add a default value when no condition is met
+    )
+  ) %>%
+  mutate(
+    age = case_when(
+      age_code == 1 ~ "1",
+      age_code == 2 ~ "2",
+      age_code == 3 ~ "3",
+      age_code == 4 ~ "4",
+      age_code == 5 ~ "5",
+      age_code == 6 ~ "< 6",
+      age_code == 7 ~ "6",
+      age_code == 8 ~ ">6",
+      age_code == 9 ~ "7",
+      age_code == 10 ~ "8",
+      age_code == 11 ~ "9",
+      age_code == 12 ~ "10",
+      age_code == 13 ~ "11",
+      age_code == 14 ~ "<12",
+      age_code == 15 ~ "12",
+      age_code == 16 ~ "13",
+      age_code == 17 ~ "14",
+      age_code == 18 ~ "<15",
+      age_code == 19 ~ "15",
+      age_code == 20 ~ "16",
+      age_code == 21 ~ "17",
+      age_code == 22 ~ ">17",
+      age_code == 23 ~ "18",
+      age_code == 24 ~ "19",
+      age_code == 25 ~ "20",
+      age_code == 26 ~ ">20",
+      age_code == 27 ~ "21",
+      age_code == 28 ~ "22",
+      age_code == 29 ~ "23",
+      age_code == 30 ~ "24",
+      age_code == 31 ~ "25-29",
+      age_code == 32 ~ ">30",
+      age_code == 33 ~ "7-11",
+      age_code == 34 ~ "12-14",
+      age_code == 35 ~ "15-17",
+      age_code == 36 ~ "25",
+      age_code == 37 ~ "26",
+      age_code == 38 ~ "27",
+      age_code == 39 ~ "28",
+      age_code == 40 ~ "29",
+      age_code == 41 ~ "30"
+      )
+  ) %>%   
+  mutate(
+    age_t = case_when(
+      Cycle == "1AP" ~ 6,
+      Cycle == "2AP" ~ 7,
+      Cycle == "3AP" ~ 8,
+      Cycle == "4AP" ~ 9,
+      Cycle == "5AP" ~ 10,
+      Cycle == "6AP" ~ 11,
+      Cycle == "1AC" ~ 12,
+      Cycle == "2AC" ~ 13,
+      Cycle == "3AC" ~ 14,
+      Cycle == "TC" ~ 15,
+      Cycle == "1BAC" ~ 16,
+      Cycle == "2BAC" ~ 17,
+    )
+  ) 
+
+  Table_join <- Table_join %>% mutate(
+    age=as.numeric(age),
+    age_difference = case_when(age <= age_t ~ 0,
+                               TRUE ~ age - age_t),
+    retard = case_when(
+      age_difference == 0 ~ "Aucun retard",
+      age_difference == 1 ~ "Une année de retard",
+      age_difference >= 2 ~ "Deux ans ou plus de retard",
+      TRUE ~"Deux ans ou plus de retard"
+    )
+  )
+
+```
+
+```{r define plot theme , include = FALSE}
+  plot_theme <- theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      legend.background = element_rect(fill = "transparent", color = NA),
+      plot.title = element_text(size = 15, family="Palatino", margin=margin(0,0,5,0),hjust = 0.5)
+    )
+```
+
+```{r pyramid plot effectif par cycle par genre, include=FALSE}
+get_only_legend <- function(plot) {
+  # get tabular interpretation of plot
+  plot_table <- ggplot_gtable(ggplot_build(plot))
+  
+  #  Mark only legend in plot
+  legend_plot <-
+    which(sapply(plot_table$grobs, function(x)
+      x$name) == "guide-box")
+  
+  # extract legend
+  legend <- plot_table$grobs[[legend_plot]]
+  
+  # return legend
+  return(legend)
+}
+pyramid_plot <- list()
+
+for (NV in unique(Table_join$niveau)) {
+  pyramid_plot[[NV]] <- list()
+  Table <- Table_join %>% filter(niveau == NV)
+  for (REG in unique(Table_join$LL_REG)) {
+    # Calculate the sum of effectif for each combination of cycle, retard, and effectif type (fem or masc)
+    sum_effectif <-
+      aggregate(
+        cbind(Effectif_fem_total, Effectif_masc_total) ~ Cycle + retard + age_t,
+        data = Table %>% filter(LL_REG == REG),
+        FUN = sum
+      )
+    
+    # Reshape the data from wide to long format
+    sum_effectif_long <-
+      reshape2::melt(
+        sum_effectif,
+        id.vars = c("Cycle", "retard", "age_t"),
+        variable.name = "effectif_type",
+        value.name = "effectif"
+      )
+    
+    # Reorder the levels of the 'retard' variable to have the desired stacking order
+    sum_effectif_long$retard <-
+      factor(
+        sum_effectif_long$retard,
+        levels = c("Aucun retard", "Une année de retard", "Deux ans ou plus de retard")
+      )
+    
+    max_max <- sum_effectif_long %>%
+      group_by(Cycle, effectif_type) %>%
+      mutate(max = max(sum(effectif))) %>%
+      summarise(max_max = max(max))
+    
+    fille <- ggplot(
+      sum_effectif_long %>% filter(effectif_type == "Effectif_fem_total"),
+      aes(
+        x = reorder(Cycle, age_t),
+        y = effectif,
+        fill = retard
+      )
+    ) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = "", y = "", fill = "Retard") +
+      theme_bw() +
+      ggtitle("Fille") +
+      coord_flip() +
+      scale_y_continuous(
+        limits = c(0, max(max_max$max_max)),
+        breaks = c(0, max(max_max$max_max) / 2, max(max_max$max_max)),
+        labels = c(0, max(max_max$max_max) / 2, max(max_max$max_max))
+      ) +
+      theme(
+        plot.title = element_text(hjust = 0, vjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "none"
+      )
+    
+    
+    garcon <- ggplot(
+      sum_effectif_long %>% filter(effectif_type == "Effectif_masc_total"),
+      aes(
+        x = reorder(Cycle, age_t),
+        y = -effectif,
+        fill = retard
+      )
+    ) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = "", y = "", fill = "") +
+      theme_bw() +
+      ggtitle("Garçon") +
+      coord_flip() +
+      scale_y_continuous(
+        limits = c(-max(max_max$max_max), 0),
+        breaks = c(-max(max_max$max_max), -max(max_max$max_max) / 2, 0),
+        labels = c(max(max_max$max_max), max(max_max$max_max) / 2, 0)
+      ) +
+      theme(plot.title = element_text(hjust = 1, vjust = 1),
+            legend.position = "none")
+    
+    
+    
+    garcon_legend <- ggplot(
+      sum_effectif_long %>% filter(effectif_type == "Effectif_masc_total"),
+      aes(
+        x = reorder(Cycle, age_t),
+        y = -effectif,
+        fill = retard
+      )
+    ) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = "", y = "", fill = "Retard") +
+      theme_bw() +
+      ggtitle("Garçon") +
+      coord_flip() +
+      scale_y_continuous(
+        limits = c(-max(max_max$max_max), 0),
+        breaks = c(-max(max_max$max_max), -max(max_max$max_max) / 2, 0),
+        labels = c(max(max_max$max_max), max(max_max$max_max) / 2, 0)
+      ) + theme(legend.position = "bottom")
+    
+    legend <- get_only_legend(garcon_legend)
+    
+    pyramid_plot[[NV]][[REG]] <- plot_grid(garcon,
+                                           fille,
+                                           ncol = 2,
+                                           rel_widths = c(0.327, 0.3)) + ggtitle(label = "Effectif des élèves par cycle") +
+      plot_theme
+    pyramid_plot[[NV]][[REG]] <-
+      list(pyramid_plot[[NV]][[REG]], REG)
+  }
+  pyramid_plot[[NV]] <- list(pyramid_plot[[NV]],NV)
+
+}
+```
+
+```{r legend vertical , include=FALSE}
+    garcon_legend <- ggplot(
+      sum_effectif_long %>% filter(effectif_type == "Effectif_masc_total"),
+      aes(
+        x = reorder(Cycle, age_t),
+        y = -effectif,
+        fill = retard
+      )
+    ) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = "", y = "", fill = "Retard") +
+      theme_bw() +
+      ggtitle("Garçon") +
+      coord_flip() +
+      scale_y_continuous(
+        limits = c(-max(max_max$max_max), 0),
+        breaks = c(-max(max_max$max_max),-max(max_max$max_max) / 2, 0),
+        labels = c(max(max_max$max_max), max(max_max$max_max) / 2, 0)
+      ) + theme(
+      legend.position = "bottom",
+    legend.direction = "vertical")
+
+    legend_v <- get_only_legend(garcon_legend)
+```
+
+```{r type par genre, include= FALSE}
+pie_chart <- list()
+for(NV in unique(Table_join$niveau)){
+  pie_chart[[NV]] <- list()
+  for (REG in unique(Table_join$LL_REG)) {
+    # Calculate the sum of effectif for each retard level
+    sum_effectif <- aggregate(
+      cbind(Effectif_fem_total, Effectif_masc_total) ~ retard,
+      data = Table_join %>% filter(REG == LL_REG, niveau == NV),
+      FUN = sum
+    )
+    
+    # Reshape the data from wide to long format
+    sum_effectif_long <- reshape2::melt(
+      sum_effectif,
+      id.vars = c("retard"),
+      variable.name = "effectif_type",
+      value.name = "effectif"
+    )
+    
+    # Reorder the levels of the 'retard' variable to have the desired stacking order
+    sum_effectif_long$retard <- factor(
+      sum_effectif_long$retard,
+      levels = c("Aucun retard", "Une année de retard", "Deux ans ou plus de retard")
+    )
+    
+    
+    # Create a pie chart
+    fille <- ggplot(
+      sum_effectif_long %>%  filter(effectif_type == "Effectif_fem_total") %>%
+        mutate(percent =  effectif / sum(effectif) * 100),
+      aes(x = "",
+          y = percent,
+          fill = retard)
+    ) +
+      geom_col(width = 1) +
+      coord_polar(theta = "y") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = "", y = "", fill = "Retard") +
+      theme_void() +
+      theme(
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "none"
+      ) + ggtitle("Fille") +
+      geom_text(aes(label = paste0(round(percent), "%")),
+                position = position_stack(vjust = 0.5),
+                color="white")
+    
+    
+    # Create a pie chart
+    garcon <- ggplot(
+      sum_effectif_long %>%  filter(effectif_type == "Effectif_masc_total") %>%
+        mutate(percent =  effectif / sum(effectif) * 100),
+      aes(x = "",
+          y = percent,
+          fill = retard)
+    ) +
+      geom_col(width = 1) +
+      coord_polar(theta = "y") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = "", y = "", fill = "Retard") +
+      theme_void() +
+      theme(
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "none"
+      ) +
+      ggtitle("Garçon") +
+      geom_text(aes(label = paste0(round(percent), "%")),
+                position = position_stack(vjust = 0.5),
+                color="white")
+    
+    
+    combined_plot <-
+      plot_grid(fille, garcon, nrow = 2, rel_widths = c(1, 1))
+    arranged_plots <-
+      plot_grid(
+        combined_plot,
+        legend_v,
+        ncol = 1,
+        rel_heights = c(7, 1)
+      )+ 
+      ggtitle(label=paste(
+      strwrap(
+        "Pourcentage des élèves par genre par type",
+        width = 30,
+        simplify = TRUE
+      ),
+      collapse = "\n"
+    ))+plot_theme
+    pie_chart[[NV]][[REG]] <- list()
+    pie_chart[[NV]][[REG]] <- list(arranged_plots,REG)  
+    
+  }
+  pie_chart[[NV]] <- list(pie_chart[[NV]],NV) 
+}
+```
+
+```{r  Visuel evolution, include=FALSE}
+Evolution$Niveau[Evolution$Niveau == "College"] <-
+  "Secondaire collégial"
+Evolution$Niveau[Evolution$Niveau == "Qualif"] <-
+  "Secondaire qualifiant"
+
+
+ev_list <- list()
+for (NV in unique(Evolution$Niveau)) {
+  ev_list[[NV]] <- list()
+  for(REG in unique(Evolution$Région)){
+  New <- Evolution %>%
+    filter(Région == REG) %>%
+    filter(Niveau==NV) %>% 
+    group_by(Annee) %>%
+    summarize(
+      part_des_filles = (sum(Filles) / sum(TOTAL)) 
+      
+    ) 
+
+  
+  New$Annee <- as.character(New$Annee)
+  
+  ev_list[[NV]][[REG]] <- list()
+  ev_plot <- New %>%
+    ggplot(aes(x = Annee, y = part_des_filles)) +
+    geom_bar(stat = "identity", fill = "#0c84a2") +
+    xlab(NULL) +
+    ylab(NULL) +
+    scale_y_continuous(labels = scales::percent) +
+    ggtitle(paste(
+      strwrap(
+        "Evolution du nombre des filles par année",
+        width = 30,
+        simplify = TRUE
+      ),
+      collapse = "\n"
+    )) +
+    geom_text(aes(label = paste0(round(
+      part_des_filles * 100
+    ), "%")),
+    position = position_stack(vjust = 0.5),
+    color = "white") +
+    plot_theme
+
+  ev_list[[NV]][[REG]] <- list(ev_plot,REG)
+
+  }
+  ev_list[[NV]] <- list(ev_list[[NV]],NV)
+}
+```
+
+```{r map data base, include=FALSE}
+Table_prov <- Table_join %>%
+  group_by(LL_PROV, LA_PROV, CD_PROV,CD_REG,LL_REG,niveau) %>%
+  summarise(
+    nouveaux_fem = sum(nouveaux_femi),
+    nouveaux_masc = sum(nouveaux_masc),
+    redoublons_fem = sum(redoublons_femi),
+    redoublons_masc = sum(redoublons_masc),
+    total_fem = sum(Effectif_fem_total),
+    total_masc = sum(Effectif_masc_total),
+    Effectif_total = sum(Effectif_Total),
+    Redoublons_total = sum(Redoublons_total),
+    Nouveaux_total = sum(Nouveaux_total)
+  ) %>%
+  arrange(CD_REG,CD_PROV)
+
+map_prov <-
+  inner_join(provinces_shape, Table_prov, by = c("provCode" = "CD_PROV"))
+map_prov$regName <- NULL
+
+```
+
+```{r  Visuel par province , include=FALSE}
+
+map_prov$rpt_fem <-
+  (map_prov$total_fem / map_prov$Effectif_total)
+map_prov <- st_make_valid(map_prov)
+
+# define breaks
+breaks <- seq(min(map_prov$rpt_fem), max(map_prov$rpt_fem), length.out = 8)
+
+map_pro_ls <- list()
+
+for(NV in unique(map_prov$niveau)) {
+  for (REG in unique(map_prov$LL_REG)){
+    map_filter <- map_prov %>% filter(LL_REG == REG)
+    
+    bbox_new <- st_bbox(map_filter) # current bounding box
+    
+    xrange <- bbox_new$xmax - bbox_new$xmin # range of x values
+    yrange <- bbox_new$ymax - bbox_new$ymin # range of y values
+    
+    bbox_new[1] <- bbox_new[1] - (0.25 * xrange) # xmin - left
+    bbox_new[3] <- bbox_new[3] + (0.25 * xrange) # xmax - right
+    bbox_new[2] <- bbox_new[2] - (0.25 * yrange) # ymin - bottom
+    bbox_new[4] <- bbox_new[4] + (0.2 * yrange) # ymax - top
+    
+    map_pro_ls[[NV]][[REG]] <- list()
+    
+    pro_plot <-
+      map_filter %>% tm_shape(bbox = bbox_new) +
+      tm_fill(col = "rpt_fem",
+              palette = "BuGn",
+              title = "",
+              breaks = breaks) +
+      tm_borders(col = "black") +
+      tm_layout(
+        frame = FALSE,
+        bg.color = NA,
+        inner.margins = c(0.1, 0.1, 0.1, 0.1),
+        outer.margins = c(0, 0, 0, 0),
+        title = "Score fille par région",
+        title.position = c("left", "top"),
+        title.size = 1.25,
+        title.fontfamily = "Palatino",
+        legend.format = list(text.separator = "-"),
+        legend.text.size = 0.8,
+        legend.position = c("left", "bottom")
+      )
+    map_pro_ls[[NV]][[REG]] <-list(pro_plot,REG) 
+  }
+  map_pro_ls[[NV]] <- list(map_pro_ls[[NV]],NV)
+}
+
+```
+
+```{r Visuel Etudiant par milieu par région, include=FALSE}
+#combine the plots in a list
+milieu_rural <- list()
+milieu_urbain <- list()
+
+for (NV in unique(Table_join$niveau)) {
+  for (REG in unique(Table_join$LL_REG)) {
+    Table_milieu <-  Table_join %>%
+      filter(LL_REG == REG) %>%
+      filter(niveau == NV) %>%
+      group_by(LL_MIL, LA_MIL, Cycle, retard, age_t) %>%
+      summarise(
+        nouveaux_fem = sum(nouveaux_femi),
+        nouveaux_masc = sum(nouveaux_masc),
+        redoublons_fem = sum(redoublons_femi),
+        redoublons_masc = sum(redoublons_masc),
+        total_fem = sum(Effectif_fem_total),
+        total_masc = sum(Effectif_masc_total),
+        Effectif_total = sum(Effectif_Total),
+        Redoublons_total = sum(Redoublons_total),
+        Nouveaux_total = sum(Nouveaux_total)
+      ) %>% mutate(
+        pct_fem = total_fem / sum(Effectif_fem_total),
+        pct_masc = total_masc / sum(Effectif_masc_total)
+      )
+    
+    
+    urbain_fille <-  Table_milieu %>% filter(LL_MIL == "URBAIN") %>%
+      group_by(retard) %>%
+      summarise(total_fem = sum(total_fem),
+                total_masc = sum(total_masc)) %>% mutate(pct_fem = total_fem / sum(total_fem),
+                                                         pct_masc = total_masc / sum(total_masc))  %>%
+      ggplot(aes(x = "",
+                 y = pct_fem,
+                 fill = retard)) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = NULL, y = NULL, fill = "Retard") +
+      theme_void() +
+      ggtitle("Fille") +
+      coord_polar("y", start = 0) +
+      scale_y_continuous(
+        labels = scales::percent_format(scale = 1),
+        limits = c(0, 1),
+        # Adjust the y-axis limits to cover the percentage range (0 to 1)
+        breaks = seq(0, 1, 0.25)
+      ) +  # Set custom breaks for the y-axis
+      geom_text(aes(label = paste0(round(pct_fem * 100), "%")),
+                position = position_stack(vjust = 0.5),
+                color="white") +
+      guides(fill = "none")  # Eliminate the legend
+    
+    
+    rural_fille <- Table_milieu %>%
+      filter(LL_MIL == "RURAL") %>%
+      group_by(retard) %>%
+      summarise(total_fem = sum(total_fem),
+                total_masc = sum(total_masc)) %>%
+      mutate(pct_fem = total_fem / sum(total_fem),
+             pct_masc = total_masc / sum(total_masc)) %>%
+      ggplot(aes(x = "",
+                 y = pct_fem,
+                 fill = retard)) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = NULL, y = NULL, fill = "Retard") +
+      theme_void() +
+      ggtitle("Fille") +
+      coord_polar("y") +  # Removed 'start = 0' as the default is to start at 12 o'clock
+      scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+      geom_text(aes(label = paste0(round(pct_fem * 100), "%")),
+                position = position_stack(vjust = 0.5),
+                color="white") +
+      guides(fill = "none")  # Eliminate the legend
+    
+    
+    
+    urbain_garcon <- Table_milieu %>%
+      filter(LL_MIL == "URBAIN") %>%
+      group_by(retard) %>%
+      summarise(total_fem = sum(total_fem),
+                total_masc = sum(total_masc)) %>%
+      mutate(pct_fem = total_fem / sum(total_fem),
+             pct_masc = total_masc / sum(total_masc)) %>%
+      ggplot(aes(x = "",
+                 y = pct_masc,
+                 fill = retard)) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = NULL, y = NULL, fill = "Retard") +
+      theme_void() +
+      ggtitle("Garçon") +
+      coord_polar("y") +  # Removed 'start = 0' as the default is to start at 12 o'clock
+      scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+      geom_text(aes(label = paste0(round(pct_masc * 100), "%")),
+                position = position_stack(vjust = 0.5),
+                color="white") +
+      guides(fill = "none")  # Eliminate the legend
+    
+    
+    rural_garcon <- Table_milieu %>%
+      filter(LL_MIL == "RURAL") %>%
+      group_by(retard) %>%
+      summarise(total_fem = sum(total_fem),
+                total_masc = sum(total_masc)) %>%
+      mutate(pct_fem = total_fem / sum(total_fem),
+             pct_masc = total_masc / sum(total_masc)) %>%
+      ggplot(aes(x = "",
+                 y = pct_masc,
+                 fill = retard)) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c84a2", "#0ca275", "#0c39a2")) +
+      labs(x = NULL, y = NULL, fill = "Retard") +
+      theme_void() +
+      ggtitle("Garçon") +
+      coord_polar("y") +  # Removed 'start = 0' as the default is to start at 12 o'clock
+      scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+      geom_text(aes(label = paste0(round(pct_masc * 100), "%")),
+                position = position_stack(vjust = 0.5),
+                color="white") +
+      guides(fill = "none")  # Eliminate the legend
+    
+    
+    
+    rural <-
+      plot_grid(rural_fille,
+                rural_garcon,
+                ncol = 2) + ggtitle(label = paste(strwrap("Rural"))) + plot_theme
+    
+    milieu_rural[[NV]][[REG]] <- list(rural, REG)
+    
+    
+    urbain <-
+      plot_grid(urbain_fille,
+                urbain_garcon,
+                ncol = 2) +
+      ggtitle(label = paste(strwrap("Urbain"))) + plot_theme
+    
+    milieu_urbain[[NV]][[REG]] <- list(urbain, REG)
+    
+  }
+  milieu_rural[[NV]] <- list(milieu_rural[[NV]], NV)
+  milieu_urbain[[NV]] <- list(milieu_urbain[[NV]], NV)
+  
+}
+
+```
+
+```{r map_com data, include=FALSE}
+
+Table_COMM <- Table_join %>%
+  group_by(CD_COM, LL_COM,CD_REG,CD_PROV,LL_REG,niveau) %>%
+  summarise(
+    nouveaux_fem = sum(nouveaux_femi),
+    nouveaux_masc = sum(nouveaux_masc),
+    redoublons_fem = sum(redoublons_femi),
+    redoublons_masc = sum(redoublons_masc),
+    total_fem = sum(Effectif_fem_total),
+    total_masc = sum(Effectif_masc_total),
+    Effectif_total = sum(Effectif_Total),
+    Redoublons_total = sum(Redoublons_total),
+    Nouveaux_total = sum(Nouveaux_total)
+  ) 
+
+map_com <-
+  full_join(com_shape, Table_COMM, by = c("CD_COM_CTR" = "CD_COM"))
+map_com <- map_com %>% arrange(LL_PROV)
+
+names(map_com)[names(map_com) == "LL_PROV.x"] <-"LL_PROV"
+names(map_com)[names(map_com) == "LL_REG.x"] <-"LL_REG"
+map_com <- map_com %>%
+  filter(!is.na(niveau),!is.na(LL_PROV))
+
+for (NV in unique(map_com$niveau)) {
+  for (PROV in unique(map_com$LL_PROV)) {
+
+    map_filter <- map_com %>% filter( niveau == NV,LL_PROV==PROV) %>%  arrange(ID_COMM)
+    shape_filter <- com_shape %>% filter(LL_PROV == PROV)%>% arrange(ID_COMM)
+    missing_com <- setdiff(shape_filter$CD_COM_CTR, map_filter$CD_COM_CTR)
+    
+    if (length(missing_com) > 0) {
+      missing_rows <- shape_filter[shape_filter$CD_COM_CTR %in% missing_com, ]
+      lgt <- length(missing_rows)
+      
+      if (lgt > 0) {
+        # Check and fix column consistency
+        missing_cols <- setdiff(names(map_com), names(missing_rows))
+        for (col in missing_cols) {
+          missing_rows[[col]] <- NA
+        }
+        
+        # Reorder columns to match map_com
+        missing_rows <- missing_rows[names(map_com)]
+        missing_rows$niveau <- NV
+        
+        map_com <- rbind(map_com, missing_rows)
+      }
+    }
+  }
+}
+
+
+map_com[14:19] <- list(NULL)
+map_com[23] <- NULL
+
+map_com$rpt_fem <- round((map_com$total_fem / map_com$Effectif_total),2)
+map_com <- st_make_valid(map_com)
+map_com$rpt_fem[is.na(map_com$rpt_fem)] <- 0
+
+# Remove LL_PROVINCE with rpt_fem = 0 and niveau = NA
+map_com <- map_com %>%
+  group_by(LL_PROV) %>%
+  filter(sum(rpt_fem) != 0)
+
+
+
+```
+
+```{r plot map_com, include=FALSE}
+sf_use_s2(FALSE)
+map_com_ls <- list()
+
+# define breaks
+breaks <- seq(min(map_com$rpt_fem), max(map_com$rpt_fem), length.out = 8)
+
+# Loop through each region and province to create maps
+for (NV in unique(map_com$niveau)) {
+  map_com_ls[[NV]] <- list()
+  map <- map_com %>% filter(niveau == NV)
+  
+  for (REG in unique(map$LL_REG)) {
+    map_com_ls[[NV]][[REG]] <- list()
+    map_reg <- filter(map, LL_REG == REG)  # Modified line
+    
+    for (PROV in unique(map_reg$LL_PROV)) {  # Modified line
+      map_com_fil <- filter(map_reg, LL_PROV == PROV)  # Modified line
+      map_com_fil <- st_make_valid(map_com_fil)
+      
+      bbox_new <- st_bbox(map_com_fil) # current bounding box
+      
+      xrange <- bbox_new$xmax - bbox_new$xmin # range of x values
+      yrange <- bbox_new$ymax - bbox_new$ymin # range of y values
+      
+      bbox_new[1] <- bbox_new[1] - (0.25 * xrange) # xmin - left
+      bbox_new[3] <- bbox_new[3] + (0.25 * xrange) # xmax - right
+      bbox_new[2] <- bbox_new[2] - (0.25 * yrange) # ymin - bottom
+      bbox_new[4] <- bbox_new[4] + (0.2 * yrange) # ymax - top
+      
+      map_com_ls[[NV]][[REG]][[PROV]] <- tm_shape(map_com_fil, bbox = bbox_new) +
+        tmap_options(check.and.fix = TRUE) +
+        tm_fill(
+          col = "rpt_fem",
+          palette = "BuGn",
+          title = "Score fille par province",
+          breaks = breaks
+        ) +
+        tm_borders(col = "black") +
+        tm_layout(
+          frame = FALSE,
+          bg.color = NA,
+          inner.margins = c(0, 0, 0, 0),
+          outer.margins = c(0, 0, 0, 0),
+          main.title = paste(strwrap(PROV, width = 15, simplify = TRUE), collapse = "\n"),
+          main.title.position = c("center", "top"),
+          main.title.size = 1,
+          main.title.fontfamily = "Palatino",
+          legend.format = list(text.separator = "-"),
+          legend.text.size = 0.8,
+          legend.height = -0.3,
+          legend.position = c("left", "bottom")
+        )
+    }
+  }
+  
+  # Add the current niveau to the list
+  map_com_ls[[NV]] <- list(map_com_ls[[NV]], NV)
+}
+
+
+```
+
+
+```{r plot,echo = FALSE,warning=FALSE,message=FALSE,results='hide',fig.align = "center",fig.width = 11.69, fig.height = 8.27,fig.show = 'hold'}
+invisible({
+  Table_join <- Table_join %>% arrange(niveau)
+  for (NV in unique(Table_join$niveau)) {
+    for (REG in unique(Table_join$LL_REG)) {
+      print(
+        plot_grid(
+          ev_list[[NV]][[1]][[REG]][[1]],
+          pie_chart[[NV]][[1]][[REG]][[1]],
+          ncol = 3,
+          rel_widths = c(1.5, 2, 3)
+        ) + 
+        ggtitle(label = paste("\n",REG,"\n")) + 
+        theme(plot.title = element_text(size = 30, face = "bold", family = "Bookman"))
+      )
+      pushViewport(viewport(layout = grid.layout(nrow = 10, ncol = 5)))
+      print(map_pro_ls[[NV]][[1]][[REG]][[1]],
+            vp = viewport(layout.pos.row = 2:10,
+                          layout.pos.col = 4:5))
+      grid.text(NV, x = 0.17, y = 0.98, gp = gpar(fontsize = 25, col = rgb(40, 40, 40, maxColorValue = 255),fontfamily = "Bookman"))
+      grid.text(paste(NV, ":", REG), x = 0.8, y = 0.015, gp = gpar(fontsize = 12, col = "#555555",fontfamily = "Bookman"))
+
+      milieu <- plot_grid(milieu_rural[[NV]][[1]][[REG]][[1]],
+                          milieu_urbain[[NV]][[1]][[REG]][[1]],
+                          ncol = 2)
+      print(plot_grid(
+        pyramid_plot[[NV]][[1]][[REG]][[1]],
+        milieu,
+        legend,
+        nrow = 3,
+        rel_heights = c(2, 2, 0.5)
+      ))
+      grid.text(paste(NV, ":", REG), x = 0.8, y = 0.015, gp = gpar(fontsize = 12, col = "#555555",fontfamily = "Bookman"))
+
+      # Print the arranged plots
+      if (!is.null(map_com_ls[[NV]][[1]][[REG]])) {
+        map_com_shapes <- map_com_ls[[NV]][[1]][[REG]]
+        lgth <- length(map_com_shapes)
+        if (lgth == 2) {
+          print(tmap_arrange(map_com_shapes, ncol = 2))
+        } else {
+          print(tmap_arrange(map_com_shapes, ncol = (lgth + 1) / 2))
+        }
+      }
+      # Print the footer at the end of the page
+      grid.text(paste(NV, ":", REG), x = 0.8, y = 0.015, gp = gpar(fontsize = 12, col = "#555555",fontfamily = "Bookman"))
+    }
+  }
+})
+
+
+
+
+
+```

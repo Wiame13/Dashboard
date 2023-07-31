@@ -1,0 +1,562 @@
+---
+classoption: landscape
+geometry: "left=0.5cm,right=0.5cm,top=0.5cm,bottom=0.5cm"
+output:
+  pdf_document
+---
+
+
+
+
+```{r load packages, include=FALSE}
+library("tidyverse")
+library("readxl")
+library("ggplot2")
+library("dplyr")
+library("mc2d")
+library("tmap")
+library("tmaptools")
+library("sf")
+library("leaflet")
+library("RColorBrewer")
+library("treemap")
+library("gridExtra")
+library("grid")
+library("cowplot")
+library("treemapify")
+
+rm(list=ls())
+gc()
+```
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+```{r import data, include=FALSE}
+setwd("C:/Users/Wiame/Desktop/Effectif")
+Effectif_v2 <- read_excel("Effectif.xlsx")
+Location_et <- read_excel("COMMUNES.xlsx")
+etablissement <-
+  read_excel("dbo_DataIdentifEtablissementsPublic.xlsx", sheet = "dbo_DataIdentifEtablissementsPu")
+Evolution <- read_excel("data_Reg_National_Final.xlsx")
+
+```
+
+```{r import shapefiles, include=FALSE}
+region_shape <- read_sf("Shapefile_regional/Regions.shp")
+provinces_shape <- read_sf("Shapefile_provincial/Provinces.shp")
+com_shape <- read_sf("Shapefile_communal/Communes.shp")
+```
+
+```{r Calcul des variables, include=FALSE}
+#Calcul effectif total par genre
+Effectif_masc_total <-
+  Effectif_v2$nouveaux_masc + Effectif_v2$redoublons_masc
+Effectif_fem_total <-
+  Effectif_v2$nouveaux_femi + Effectif_v2$redoublons_femi
+Effectif_v2 <-
+  mutate(Effectif_v2, Effectif_masc_total, Effectif_fem_total)
+
+#Calcul nouveaux total
+Nouveaux_total <-
+  Effectif_v2$nouveaux_masc + Effectif_v2$nouveaux_femi
+Effectif_v2 <- mutate(Effectif_v2, Nouveaux_total)
+
+#Calculate total redoublons
+Redoublons_total <-
+  Effectif_v2$redoublons_femi  + Effectif_v2$redoublons_masc
+Effectif_v2 <- mutate(Effectif_v2, Redoublons_total)
+
+#Ajouter le niveau
+Effectif_v2 <- Effectif_v2 %>%
+  mutate(niveau = ifelse(
+    grepl("^106", nefstat10),
+    "Primaire",
+    ifelse(
+      grepl("^3A3", nefstat10),
+      "Secondaire collégial",
+      "Secondaire qualifiant"
+    )
+  ))
+```
+
+```{r Jointure, include=FALSE}
+et_eff <-
+  inner_join(Effectif_v2, etablissement, by = c("cd_etab" = "CD_ETAB"))
+head(et_eff)
+et_eff[23:112] <- list(NULL)
+et_eff[16:19] <- list(NULL)
+et_eff[9] <- NULL
+et_eff[18:29] <- list(NULL)
+et_eff[15:16] <- list(NULL)
+
+#Change CD_COM from char to num
+et_eff$CD_COM <-
+  as.numeric(et_eff$CD_COM) 
+
+Table_join <- inner_join(et_eff, Location_et, by = "CD_COM")
+Table_join <- Table_join %>%
+  arrange(CD_REG) %>%
+  filter(LL_REG != "Services Centraux") %>%
+  mutate(
+    Cycle = case_when(
+      grepl("^1061", nefstat10) ~ "1AP",
+      grepl("^1062", nefstat10) ~ "2AP",
+      grepl("^1063", nefstat10) ~ "3AP",
+      grepl("^1064", nefstat10) ~ "4AP",
+      grepl("^1065", nefstat10) ~ "5AP",
+      grepl("^1066", nefstat10) ~ "6AP",
+      grepl("^2A31", nefstat10) ~ "1AC",
+      grepl("^2A32", nefstat10) ~ "2AC",
+      grepl("^2A33", nefstat10) ~ "3AC",
+      grepl("^3A31", nefstat10) ~ "TC",
+      grepl("^3A32", nefstat10) ~ "1BAC",
+      grepl("^3A33", nefstat10) ~ "2BAC",
+      TRUE ~ as.character(NA)  # Add a default value when no condition is met
+    )
+  ) %>%
+  mutate(
+    age = case_when(
+      age_code == 1 ~ "1",
+      age_code == 2 ~ "2",
+      age_code == 3 ~ "3",
+      age_code == 4 ~ "4",
+      age_code == 5 ~ "5",
+      age_code == 6 ~ "< 6",
+      age_code == 7 ~ "6",
+      age_code == 8 ~ ">6",
+      age_code == 9 ~ "7",
+      age_code == 10 ~ "8",
+      age_code == 11 ~ "9",
+      age_code == 12 ~ "10",
+      age_code == 13 ~ "11",
+      age_code == 14 ~ "<12",
+      age_code == 15 ~ "12",
+      age_code == 16 ~ "13",
+      age_code == 17 ~ "14",
+      age_code == 18 ~ "<15",
+      age_code == 19 ~ "15",
+      age_code == 20 ~ "16",
+      age_code == 21 ~ "17",
+      age_code == 22 ~ ">17",
+      age_code == 23 ~ "18",
+      age_code == 24 ~ "19",
+      age_code == 25 ~ "20",
+      age_code == 26 ~ ">20",
+      age_code == 27 ~ "21",
+      age_code == 28 ~ "22",
+      age_code == 29 ~ "23",
+      age_code == 30 ~ "24",
+      age_code == 31 ~ "25-29",
+      age_code == 32 ~ ">30",
+      age_code == 33 ~ "7-11",
+      age_code == 34 ~ "12-14",
+      age_code == 35 ~ "15-17",
+      age_code == 36 ~ "25",
+      age_code == 37 ~ "26",
+      age_code == 38 ~ "27",
+      age_code == 39 ~ "28",
+      age_code == 40 ~ "29",
+      age_code == 41 ~ "30"
+      )
+  ) %>%   
+  mutate(
+    age_t = case_when(
+      Cycle == "1AP" ~ 6,
+      Cycle == "2AP" ~ 7,
+      Cycle == "3AP" ~ 8,
+      Cycle == "4AP" ~ 9,
+      Cycle == "5AP" ~ 10,
+      Cycle == "6AP" ~ 11,
+      Cycle == "1AC" ~ 12,
+      Cycle == "2AC" ~ 13,
+      Cycle == "3AC" ~ 14,
+      Cycle == "TC" ~ 15,
+      Cycle == "1BAC" ~ 16,
+      Cycle == "2BAC" ~ 17,
+    )
+  ) 
+
+  Table_join <- Table_join %>% mutate(
+    age=as.numeric(age),
+    age_difference = case_when(age <= age_t ~ 0,
+                               TRUE ~ age - age_t),
+    retard = case_when(
+      age_difference == 0 ~ "Aucun retard",
+      age_difference == 1 ~ "Une année de retard",
+      age_difference >= 2 ~ "Deux ans ou plus de retard",
+      TRUE ~"Deux ans ou plus de retard"
+    )
+  )
+
+
+```
+
+```{r define plot theme , include = FALSE}
+  plot_theme <- theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      legend.background = element_rect(fill = "transparent", color = NA),
+      plot.title = element_text(size = 15, family="Palatino", margin=margin(0,0,5,0),hjust = 0.5)
+    )
+```
+
+```{r Niveau, include=FALSE}
+
+#table niveau
+niveau <-  Effectif_v2 %>%
+  group_by(niveau) %>%
+  summarise(
+    nouveaux_fem = sum(nouveaux_femi),
+    nouveaux_masc = sum(nouveaux_masc),
+    redoublons_fem = sum(redoublons_femi),
+    redoublons_masc = sum(redoublons_masc),
+    total_fem = sum(Effectif_fem_total),
+    total_masc = sum(Effectif_masc_total),
+    Effectif_total = sum(Effectif_Total),
+    Redoublons_total = sum(Redoublons_total),
+    Nouveaux_total = sum(Nouveaux_total)
+  )
+
+
+#Add colonne pct and genre
+niveau <-
+  niveau %>% mutate(
+    Fille = (total_fem / Effectif_total) * 100,
+    Garçon = (total_masc / Effectif_total) * 100
+  ) %>%
+  pivot_longer(
+    cols = c(Fille, Garçon),
+    names_to = "Genre",
+    values_to = "pct"
+  )
+
+
+```
+
+```{r Visuel niveau, include=FALSE}
+
+niveau_plot <- niveau %>% ggplot(aes(x = niveau, y = pct, fill = Genre)) +
+  geom_col(position = "fill") +
+  coord_flip() +
+  geom_text(aes(label = paste0(round(pct), "%")),
+            position = position_fill(vjust = 0.5),
+            colour="white") +
+  xlab(NULL) +
+  ylab(NULL) +
+  labs(fill = NULL) +
+  scale_y_continuous(labels = scales::percent)+
+  scale_fill_manual(values = c("Garçon" = "#0ca275", "Fille" = "#0c84a2"))+
+  ggtitle("Niveau d'étude par genre")
+```
+
+```{r 2ndplot  , include=FALSE}
+get_only_legend <- function(plot) {
+  # get tabular interpretation of plot
+  plot_table <- ggplot_gtable(ggplot_build(plot))
+  
+  #  Mark only legend in plot
+  legend_plot <-
+    which(sapply(plot_table$grobs, function(x)
+      x$name) == "guide-box")
+  
+  # extract legend
+  legend <- plot_table$grobs[[legend_plot]]
+  
+  # return legend
+  return(legend)
+}
+
+  
+    
+    # Calculate the sum of effectif for each retard level
+sum_effectif <- aggregate(
+  cbind(Effectif_fem_total, Effectif_masc_total) ~ retard,
+  data = Table_join ,
+  FUN = sum
+)
+
+# Reshape the data from wide to long format
+sum_effectif_long <- reshape2::melt(
+  sum_effectif,
+  id.vars = c("retard"),
+  variable.name = "effectif_type",
+  value.name = "effectif"
+)
+
+# Reorder the levels of the 'retard' variable to have the desired stacking order
+sum_effectif_long$retard <- factor(
+  sum_effectif_long$retard,
+  levels = c("Aucun retard", "Une année de retard", "Deux ans ou plus de retard")
+)
+
+
+# Create a pie chart
+fille <- ggplot(
+  sum_effectif_long %>%  filter(effectif_type == "Effectif_fem_total") %>%
+    mutate(percent =  effectif / sum(effectif) * 100),
+  aes(x = "",
+      y = percent,
+      fill = retard)
+) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = c("#0c39a2", "#0ca275", "#0c84a2")) +
+  labs(x = "", y = "", fill = "Retard") +
+  theme_void() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "none"
+  ) + ggtitle("Fille") +
+  geom_text(aes(label = paste0(round(percent), "%")),
+            position = position_stack(vjust = 0.5),
+            color="white")
+
+
+# Create a pie chart
+garcon <- ggplot(
+  sum_effectif_long %>%  filter(effectif_type == "Effectif_masc_total") %>%
+    mutate(percent =  effectif / sum(effectif) * 100),
+  aes(x = "",
+      y = percent,
+      fill = retard)
+) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = c("#0c39a2", "#0ca275", "#0c84a2")) +
+  labs(x = "", y = "", fill = "Retard") +
+  theme_void() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "none"
+  ) +
+  ggtitle("Garçon") +
+  geom_text(aes(label = paste0(round(percent), "%")),
+            position = position_stack(vjust = 0.5),
+            color="white")
+
+ garcon_legend <- ggplot(
+      sum_effectif_long %>% filter(effectif_type == "Effectif_masc_total"),
+      aes(
+        x = "",
+        y = effectif,
+        fill = retard
+      )
+    ) +
+      geom_bar(stat = "identity") +
+      scale_fill_manual(values = c("#0c39a2", "#0ca275", "#0c84a2")) +
+      labs(x = "", y = "", fill = "Retard") +
+      theme_bw() +
+      ggtitle("Garçon") +
+      coord_flip() +
+      scale_y_continuous(
+        
+      ) + theme(legend.position = "bottom")
+    
+    legend <- get_only_legend(garcon_legend)
+combined_plot <-
+  plot_grid(fille, garcon, ncol = 2, rel_widths = c(1, 1))
+arranged_plots <-
+  plot_grid(
+    combined_plot,
+    legend,
+    ncol = 1,
+    rel_heights = c(7, 1)
+  )+ 
+  ggtitle(label=paste(
+    strwrap(
+      "Pourcentage des élèves par genre par type",
+      width = 30,
+      simplify = TRUE
+    ),
+    collapse = "\n"
+  ))+plot_theme
+```
+
+```{r Treemap ,include=FALSE}
+#create a new data frame for the treemap
+group <- c(rep("Garçon", 2), rep("Fille", 2))
+subgroup <- c("Redoublons", "Nouveaux inscrits", "Redoublons", "Nouveaux inscrits")
+
+value <- c(
+  (sum(Effectif_v2$redoublons_masc) / sum(Effectif_v2$Effectif_Total)) * 100,
+  (sum(Effectif_v2$nouveaux_masc) / sum(Effectif_v2$Effectif_Total)) * 100,
+  (sum(Effectif_v2$redoublons_femi) / sum(Effectif_v2$Effectif_Total)) * 100,
+  (sum(Effectif_v2$nouveaux_femi) / sum(Effectif_v2$Effectif_Total)) * 100
+)
+data <- data.frame(group, subgroup, value)
+
+plotreemap <-
+  ggplot(
+    data,
+    aes(
+      area = value,
+      fill = subgroup,
+      label = subgroup,
+      group = subgroup,
+      subgroup = group
+    )
+  ) +
+  geom_treemap() +
+  geom_treemap_text(
+    aes(label = paste0(subgroup, "\n", paste0(round(value, 2), "%"))),
+    colour = "white",
+    place = "centre",
+    grow = F,
+    reflow = T,
+    size = 15,
+    min.size = 5
+  ) +
+  geom_treemap_subgroup_text(
+    aes(label = paste0(group)),
+    colour = "white",
+    place = "bottom",
+    grow = F,
+    reflow = T,
+    size = 20,
+    padding.y = grid::unit(3, "mm")
+  ) +
+  ggtitle("Type d'étudiant par genre") +
+  guides(fill = FALSE) +
+  scale_fill_manual(values = c(
+    "Redoublons" = "#0ca275" ,
+    "Nouveaux inscrits" = "#0c84a2"
+  )) +
+  ggtitle("Description d'effectif")
+
+
+```
+
+```{r Table par région , include=FALSE}
+
+Table_reg <- Table_join %>%
+  group_by(CD_REG,LL_REG) %>%
+  summarise(
+    nouveaux_fem = sum(nouveaux_femi),
+    nouveaux_masc = sum(nouveaux_masc),
+    redoublons_fem = sum(redoublons_femi),
+    redoublons_masc = sum(redoublons_masc),
+    total_fem = sum(Effectif_fem_total),
+    total_masc = sum(Effectif_masc_total),
+    Effectif_total = sum(Effectif_Total),
+    Redoublons_total = sum(Redoublons_total),
+    Nouveaux_total = sum(Nouveaux_total)
+  )
+```
+
+
+```{r map data base, include=FALSE}
+map_region <-
+  inner_join(region_shape, Table_reg , by = c("regCode" = "CD_REG"))
+map_region$regName <- NULL
+
+```
+
+```{r Ajouter des colonnes pourcentage, include=FALSE}
+
+map_region$rpt_fem <-
+  (map_region$total_fem / map_region$Effectif_total)
+map_region <- st_make_valid(map_region)
+
+
+```
+
+```{r  Carte étudiants pour toute les régions, include=FALSE}
+bbox_new <- st_bbox(map_region) # current bounding box
+
+xrange <- bbox_new$xmax - bbox_new$xmin # range of x values
+yrange <- bbox_new$ymax - bbox_new$ymin # range of y values
+
+bbox_new[1] <- bbox_new[1] - (0.001* xrange) # xmin - left
+bbox_new[3] <- bbox_new[3] + (0.001 * xrange) # xmax - right
+bbox_new[2] <- bbox_new[2] - (0.001 * yrange) # ymin - bottom
+bbox_new[4] <- bbox_new[4] + (0.1 * yrange) # ymax - top
+
+map_plot <- tm_shape(map_region,bbox = bbox_new) +
+  tm_fill(col = "rpt_fem",
+          palette = "BuGn",
+          title = "") +
+  tm_borders() +
+  tm_layout(
+    frame = FALSE,
+    bg.color = NA,
+    inner.margins = c(0, 0, 0, 0),
+    outer.margins = c(0, 0, 0, 0),
+    title = "Score fille par région",
+    title.position = c("left", "top"),
+    title.size = 1.25,
+    title.fontfamily = "Palatino",
+    legend.format = list(text.separator = "-"),
+    legend.text.size = 0.8,
+    legend.height = -0.2
+  )
+```
+
+
+```{r plot,echo = FALSE,results='hide',fig.align = "center",fig.width = 11.69, fig.height = 8.5}
+invisible({
+  # Theme settings for all plots
+  plot_theme <- theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      legend.background = element_rect(fill = "transparent", color = NA),
+      plot.title = element_text(size = 15, family="Palatino", margin=margin(0,0,5,0),hjust = 0.5)
+    )
+  
+  par(mar=c(0.5,0.5,0.5,0.5))
+  niveau_plot <- niveau_plot + plot_theme
+  arranged_plots <-
+    arranged_plots + plot_theme +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "top",
+      # Placing the legend on the top
+      legend.box.spacing = unit(0.2, "cm")
+    )
+  plotreemap <- plotreemap + plot_theme
+  
+  # Convert the plots to grobs
+  map_plot <- suppressMessages(tmap_grob(map_plot))
+  plotreemap <- suppressMessages(as_grob(plotreemap, NULL))
+  niveau_plot <- suppressMessages(as_grob(niveau_plot, NULL))
+  arranged_plots <- suppressMessages(as_grob(arranged_plots, NULL))
+  
+  # Combine the plots in a list and define the layout 
+  p <- list(plotreemap, niveau_plot, arranged_plots, map_plot)
+  lay <- rbind(
+    c(1, 1, 1, 1, NA, 5, 5, 5),
+    c(1, 1, 1, 1, NA, 5, 5, 5),
+    c(1, 1, 1, 1, NA, 5, 5, 5),
+    c(1, 1, 1, 1, NA, 5, 5, 5),
+    c(3, 3, 3, 3, NA, 5, 5, 5),
+    c(3, 3, 3, 3, NA, 5, 5, 5),
+    c(3, 3, 3, 3, NA, 5, 5, 5),
+    c(3, 3, 3, 3, NA, 5, 5, 5),
+    c(3, 3, 3, 3, NA, 5, 5, 5),
+    c(2, 2, 2, 2, 2, 2, 2, 2),
+    c(2, 2, 2, 2, 2, 2, 2, 2)
+  )
+  # Print the arranged plots
+  print(grid.arrange(
+    grobs = p,
+    layout_matrix = lay,
+    top = textGrob("Analyse générale \n", gp = gpar(fontsize = 25,fontfamily="Bookman",fontface = "bold")),
+    newpage = FALSE
+  ))
+  
+
+})
+
+
+```
+
+
